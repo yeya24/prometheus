@@ -37,12 +37,11 @@ func BenchmarkLabelNames(b *testing.B) {
 
 	//req, err := http.NewRequest(http.MethodGet, `http://example.com/api/v1/labels?match[]={__name__!=""}`, nil)
 	//req, err := http.NewRequest(http.MethodGet, `http://example.com/api/v1/labels`, nil)
-	req, err := http.NewRequest(http.MethodGet, `http://example.com/api/v1/labels?match[]={account!=""}&match[]={alertname!=""}`, nil)
+	req, err := http.NewRequest(http.MethodGet, `http://example.com/api/v1/labels?match[]={account!=""}&match[]={alertname!=""}&match[]={tenant_id!=""}`, nil)
 	require.NoError(b, err)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		res := api.labelNames(req)
-		fmt.Println(res.data)
+		api.labelNames(req)
 	}
 }
