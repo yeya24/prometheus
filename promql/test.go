@@ -74,6 +74,16 @@ func NewTest(t testutil.T, input string) (*Test, error) {
 	return test, err
 }
 
+func NewTestWithDir(t testutil.T, dir string) *Test {
+	test := &Test{
+		T:    t,
+		cmds: []testCommand{},
+	}
+	test.storage = teststorage.NewWithDir(t, dir)
+	test.context, test.cancelCtx = context.WithCancel(context.Background())
+	return test
+}
+
 func newTestFromFile(t testutil.T, filename string) (*Test, error) {
 	content, err := ioutil.ReadFile(filename)
 	if err != nil {
