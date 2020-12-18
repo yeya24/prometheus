@@ -18,7 +18,7 @@ set -e
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # TODO: Hardcoded for current use ):
-WORK_DIR="${DIR}/web/api/v1"
+WORK_DIR="${DIR}/web/api"
 
 # TODO: Hardcoded, change it, or parametrize.
 PKG="./v1"
