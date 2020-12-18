@@ -46,6 +46,7 @@ func NewWithDir(t testutil.T, dir string) *TestStorage {
 	// need a long appendable window.
 	opts := tsdb.DefaultOptions()
 	opts.NoLockfile = true
+	opts.RetentionDuration = 0
 	opts.MinBlockDuration = int64(24 * time.Hour / time.Millisecond)
 	opts.MaxBlockDuration = int64(24 * time.Hour / time.Millisecond)
 	db, err := tsdb.Open(dir, nil, nil, opts)
