@@ -515,20 +515,24 @@ func (api *API) labelNames(r *http.Request) apiFuncResult {
 			Func:  "series", // There is no series function, this token is used for lookups that don't need samples.
 		}
 
+		var sets []storage.SeriesSet
 		labelNamesSet := make(map[string]struct{})
 		// Get all series which match matchers.
 		for _, mset := range matcherSets {
 			s := q.Select(false, hints, mset...)
-			for s.Next() {
-				series := s.At()
-				for _, lb := range series.Labels() {
-					labelNamesSet[lb.Name] = struct{}{}
-				}
+			sets = append(sets, s)
+		}
+
+		set := storage.NewMergeSeriesSet(sets, storage.ChainedSeriesMerge)
+		for set.Next() {
+			series := set.At()
+			for _, lb := range series.Labels() {
+				labelNamesSet[lb.Name] = struct{}{}
 			}
-			warnings = append(warnings, s.Warnings()...)
-			if s.Err() != nil {
-				return apiFuncResult{nil, &apiError{errorExec, s.Err()}, warnings, nil}
-			}
+		}
+		err = set.Err()
+		if err != nil {
+			return apiFuncResult{nil, &apiError{errorExec, err}, set.Warnings(), nil}
 		}
 
 		// Convert the map to an array.
