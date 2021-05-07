@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/pyroscope-io/pyroscope/pkg/agent/profiler"
 	"io"
 	"math"
 	"math/bits"
@@ -74,6 +75,11 @@ import (
 	"github.com/prometheus/prometheus/web"
 )
 
+const (
+	PYROSCOPE_APP_NAME    = "pyroscope_app_name"
+	PYROSCOPE_SERVER_ADDR = "pyroscope_server_addr"
+)
+
 var (
 	configSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "prometheus_config_last_reload_successful",
@@ -96,6 +102,11 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
+
+	profiler.Start(profiler.Config{
+		ApplicationName: os.Getenv(PYROSCOPE_APP_NAME),
+		ServerAddress:   os.Getenv(PYROSCOPE_SERVER_ADDR),
+	})
 }
 
 type flagConfig struct {
