@@ -745,7 +745,10 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 	}
 
 	for _, modifier := range c.modifiers {
-		symbols, set = modifier.Modify(symbols, set)
+		symbols, set, err = modifier.Modify(symbols, set)
+		if err != nil {
+			return errors.Wrap(err, "modify")
+		}
 	}
 
 	for symbols.Next() {

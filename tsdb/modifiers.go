@@ -26,7 +26,7 @@ import (
 )
 
 type Modifier interface {
-	Modify(sym index.StringIter, set storage.ChunkSeriesSet) (index.StringIter, storage.ChunkSeriesSet)
+	Modify(sym index.StringIter, set storage.ChunkSeriesSet) (index.StringIter, storage.ChunkSeriesSet, error)
 }
 
 type RelabelModifier struct {
@@ -38,7 +38,7 @@ func WithRelabelModifier(log ChangeLogger, relabels ...*relabel.Config) *Relabel
 	return &RelabelModifier{relabels: relabels, log: log}
 }
 
-func (d *RelabelModifier) Modify(_ index.StringIter, set storage.ChunkSeriesSet) (index.StringIter, storage.ChunkSeriesSet) {
+func (d *RelabelModifier) Modify(_ index.StringIter, set storage.ChunkSeriesSet) (index.StringIter, storage.ChunkSeriesSet, error) {
 	// Gather symbols.
 	symbols := make(map[string]struct{})
 	chunkSeriesMap := make(map[string]*mergeChunkSeries)
@@ -65,7 +65,7 @@ func (d *RelabelModifier) Modify(_ index.StringIter, set storage.ChunkSeriesSet)
 			}
 
 			if err := chksIter.Err(); err != nil {
-				return errorOnlyStringIter{err: err}, nil
+				return nil, nil, err
 			}
 
 			var deleted tombstones.Intervals
@@ -112,7 +112,7 @@ func (d *RelabelModifier) Modify(_ index.StringIter, set storage.ChunkSeriesSet)
 	sort.Slice(chunkSeriesSet, func(i, j int) bool {
 		return labels.Compare(chunkSeriesSet[i].Labels(), chunkSeriesSet[j].Labels()) < 0
 	})
-	return index.NewStringListIter(symbolsSlice), storage.NewListChunkSeriesSet(chunkSeriesSet...)
+	return index.NewStringListIter(symbolsSlice), storage.NewListChunkSeriesSet(chunkSeriesSet...), nil
 }
 
 // mergeChunkSeries merges []storage.ChunkSeries to storage.ChunkSeries.
@@ -142,11 +142,3 @@ func (s *mergeChunkSeries) Iterator() chunks.Iterator {
 
 	return storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge)(s.cs...).Iterator()
 }
-
-type errorOnlyStringIter struct {
-	err error
-}
-
-func (errorOnlyStringIter) Next() bool   { return false }
-func (errorOnlyStringIter) At() string   { return "" }
-func (s errorOnlyStringIter) Err() error { return s.err }
