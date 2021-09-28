@@ -17,7 +17,10 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/prometheus/prometheus/pkg/relabel"
+	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/index"
+	"gopkg.in/yaml.v2"
 	"io"
 	"io/ioutil"
 	"math"
@@ -416,6 +419,64 @@ func openBlock(path, blockID string) (*tsdb.DBReadOnly, tsdb.BlockReader, error)
 		return nil, nil, fmt.Errorf("block %s not found", blockID)
 	}
 	return db, block, nil
+}
+
+func relabelBlock(path, blockID, file string, addChangelog bool) error {
+	db, block, err := openBlock(path, blockID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = tsdb_errors.NewMulti(err, db.Close()).Err()
+	}()
+
+	var relabelConfig []*relabel.Config
+	b, err := ioutil.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	if err := yaml.Unmarshal(b, &relabelConfig); err != nil {
+		return errors.Wrap(err, "parsing relabel configuration")
+	}
+
+	logger := log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
+	meta := block.Meta()
+
+	changeLog := tsdb.NewChangeLog(ioutil.Discard)
+	if addChangelog {
+		changeLogPath := filepath.Join(path, "change.log")
+		f, err := os.OpenFile(changeLogPath, os.O_CREATE|os.O_WRONLY, os.ModePerm)
+		if err != nil {
+			return errors.Wrap(err, "open changelog file")
+		}
+		defer func() {
+			err = tsdb_errors.NewMulti(err, f.Close()).Err()
+		}()
+
+		changeLog = tsdb.NewChangeLog(f)
+		fmt.Printf("changelog will be available at: %s\n", changeLogPath)
+	}
+
+	compactor, err := tsdb.NewLeveledCompactor(
+		context.Background(),
+		nil,
+		logger,
+		tsdb.ExponentialBlockRanges(tsdb.DefaultOptions().MinBlockDuration, 3, 5),
+		chunkenc.NewPool(),
+		nil,
+		tsdb.WithRelabelModifier(changeLog, relabelConfig...),
+	)
+	if err != nil {
+		return errors.Wrap(err, "create leveled compactor")
+	}
+
+	newID, err := compactor.Write(path, block, meta.MinTime, meta.MaxTime, &meta)
+	if err != nil {
+		return errors.Wrap(err, "create new block")
+	}
+
+	fmt.Printf("Create new block %s successfully\n", newID.String())
+	return nil
 }
 
 func analyzeBlock(path, blockID string, limit int, runExtended bool) error {

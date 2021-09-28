@@ -83,6 +83,7 @@ type LeveledCompactor struct {
 	ctx                      context.Context
 	maxBlockChunkSegmentSize int64
 	mergeFunc                storage.VerticalChunkSeriesMergeFunc
+	modifiers                []Modifier
 }
 
 type compactorMetrics struct {
@@ -146,11 +147,11 @@ func newCompactorMetrics(r prometheus.Registerer) *compactorMetrics {
 }
 
 // NewLeveledCompactor returns a LeveledCompactor.
-func NewLeveledCompactor(ctx context.Context, r prometheus.Registerer, l log.Logger, ranges []int64, pool chunkenc.Pool, mergeFunc storage.VerticalChunkSeriesMergeFunc) (*LeveledCompactor, error) {
-	return NewLeveledCompactorWithChunkSize(ctx, r, l, ranges, pool, chunks.DefaultChunkSegmentSize, mergeFunc)
+func NewLeveledCompactor(ctx context.Context, r prometheus.Registerer, l log.Logger, ranges []int64, pool chunkenc.Pool, mergeFunc storage.VerticalChunkSeriesMergeFunc, modifiers ...Modifier) (*LeveledCompactor, error) {
+	return NewLeveledCompactorWithChunkSize(ctx, r, l, ranges, pool, chunks.DefaultChunkSegmentSize, mergeFunc, modifiers...)
 }
 
-func NewLeveledCompactorWithChunkSize(ctx context.Context, r prometheus.Registerer, l log.Logger, ranges []int64, pool chunkenc.Pool, maxBlockChunkSegmentSize int64, mergeFunc storage.VerticalChunkSeriesMergeFunc) (*LeveledCompactor, error) {
+func NewLeveledCompactorWithChunkSize(ctx context.Context, r prometheus.Registerer, l log.Logger, ranges []int64, pool chunkenc.Pool, maxBlockChunkSegmentSize int64, mergeFunc storage.VerticalChunkSeriesMergeFunc, modifiers ...Modifier) (*LeveledCompactor, error) {
 	if len(ranges) == 0 {
 		return nil, errors.Errorf("at least one range must be provided")
 	}
@@ -171,6 +172,7 @@ func NewLeveledCompactorWithChunkSize(ctx context.Context, r prometheus.Register
 		ctx:                      ctx,
 		maxBlockChunkSegmentSize: maxBlockChunkSegmentSize,
 		mergeFunc:                mergeFunc,
+		modifiers:                modifiers,
 	}, nil
 }
 
@@ -735,6 +737,17 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 		symbols = NewMergedStringIter(symbols, syms)
 	}
 
+	set := sets[0]
+	if len(sets) > 1 {
+		// Merge series using specified chunk series merger.
+		// The default one is the compacting series merger.
+		set = storage.NewMergeChunkSeriesSet(sets, c.mergeFunc)
+	}
+
+	for _, modifier := range c.modifiers {
+		symbols, set = modifier.Modify(symbols, set)
+	}
+
 	for symbols.Next() {
 		if err := indexw.AddSymbol(symbols.At()); err != nil {
 			return errors.Wrap(err, "add symbol")
@@ -748,13 +761,6 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 		ref  = uint64(0)
 		chks []chunks.Meta
 	)
-
-	set := sets[0]
-	if len(sets) > 1 {
-		// Merge series using specified chunk series merger.
-		// The default one is the compacting series merger.
-		set = storage.NewMergeChunkSeriesSet(sets, c.mergeFunc)
-	}
 
 	// Iterate over all sorted chunk series.
 	for set.Next() {
