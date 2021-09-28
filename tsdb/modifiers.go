@@ -14,6 +14,8 @@
 package tsdb
 
 import (
+	"fmt"
+	"io"
 	"math"
 	"sort"
 
@@ -25,20 +27,57 @@ import (
 	"github.com/prometheus/prometheus/tsdb/tombstones"
 )
 
-type Modifier interface {
-	Modify(sym index.StringIter, set storage.ChunkSeriesSet) (index.StringIter, storage.ChunkSeriesSet, error)
+type ChangeLogger interface {
+	DeleteSeries(del labels.Labels, intervals tombstones.Intervals)
+	ModifySeries(old labels.Labels, new labels.Labels)
 }
 
+type changeLog struct {
+	w io.Writer
+}
+
+// NewChangeLog creates a change logger writing to the given writer.
+func NewChangeLog(w io.Writer) ChangeLogger {
+	return &changeLog{w: w}
+}
+
+func (l *changeLog) DeleteSeries(del labels.Labels, intervals tombstones.Intervals) {
+	_, _ = fmt.Fprintf(l.w, "Deleted %v %v\n", del.String(), intervals)
+}
+
+func (l *changeLog) ModifySeries(old, new labels.Labels) {
+	_, _ = fmt.Fprintf(l.w, "Relabelled %v %v\n", old.String(), new.String())
+}
+
+// Modifier modifies the index symbols and chunk series before persisting a new block during compaction.
+type Modifier interface {
+	Modify(sym index.StringIter, set storage.ChunkSeriesSet, changeLog ChangeLogger) (index.StringIter, storage.ChunkSeriesSet, error)
+}
+
+// ModifiersWithChangeLog is a wrapper for a single change logger instance and multiple modifiers.
+type ModifiersWithChangeLog struct {
+	changelog ChangeLogger
+	modifiers []Modifier
+}
+
+func NewModifiersWithChangeLog(log ChangeLogger, modifiers ...Modifier) *ModifiersWithChangeLog {
+	return &ModifiersWithChangeLog{
+		changelog: log,
+		modifiers: modifiers,
+	}
+}
+
+// RelabelModifier modifies index via relabeling with changelog support.
 type RelabelModifier struct {
 	relabels []*relabel.Config
-	log      ChangeLogger
 }
 
-func WithRelabelModifier(log ChangeLogger, relabels ...*relabel.Config) *RelabelModifier {
-	return &RelabelModifier{relabels: relabels, log: log}
+// WithRelabelModifier returns a relabel modifier.
+func WithRelabelModifier(relabels ...*relabel.Config) *RelabelModifier {
+	return &RelabelModifier{relabels: relabels}
 }
 
-func (d *RelabelModifier) Modify(_ index.StringIter, set storage.ChunkSeriesSet) (index.StringIter, storage.ChunkSeriesSet, error) {
+func (d *RelabelModifier) Modify(_ index.StringIter, set storage.ChunkSeriesSet, changeLog ChangeLogger) (index.StringIter, storage.ChunkSeriesSet, error) {
 	// Gather symbols.
 	symbols := make(map[string]struct{})
 	chunkSeriesMap := make(map[string]*mergeChunkSeries)
@@ -73,7 +112,7 @@ func (d *RelabelModifier) Modify(_ index.StringIter, set storage.ChunkSeriesSet)
 			if minT != math.MaxInt64 {
 				deleted = deleted.Add(tombstones.Interval{Mint: minT, Maxt: maxT})
 			}
-			d.log.DeleteSeries(lbls, deleted)
+			changeLog.DeleteSeries(lbls, deleted)
 		} else {
 			for _, lb := range processedLabels {
 				symbols[lb.Name] = struct{}{}
@@ -87,14 +126,13 @@ func (d *RelabelModifier) Modify(_ index.StringIter, set storage.ChunkSeriesSet)
 			cs := chunkSeriesMap[lbStr]
 
 			cs.cs = append(cs.cs, &storage.ChunkSeriesEntry{
-				Lset: nil,
 				ChunkIteratorFn: func() chunks.Iterator {
 					return chksIter
 				},
 			})
 
 			if !labels.Equal(lbls, processedLabels) {
-				d.log.ModifySeries(lbls, processedLabels)
+				changeLog.ModifySeries(lbls, processedLabels)
 			}
 		}
 	}

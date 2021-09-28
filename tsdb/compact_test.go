@@ -14,8 +14,11 @@
 package tsdb
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"github.com/prometheus/common/model"
+	"github.com/prometheus/prometheus/pkg/relabel"
 	"io/ioutil"
 	"math"
 	"os"
@@ -158,7 +161,7 @@ func TestNoPanicFor0Tombstones(t *testing.T) {
 		},
 	}
 
-	c, err := NewLeveledCompactor(context.Background(), nil, nil, []int64{50}, nil, nil)
+	c, err := NewLeveledCompactor(context.Background(), nil, nil, []int64{50}, nil, nil, nil)
 	require.NoError(t, err)
 
 	c.plan(metas)
@@ -172,7 +175,7 @@ func TestLeveledCompactor_plan(t *testing.T) {
 		180,
 		540,
 		1620,
-	}, nil, nil)
+	}, nil, nil, nil)
 	require.NoError(t, err)
 
 	cases := map[string]struct {
@@ -381,7 +384,7 @@ func TestRangeWithFailedCompactionWontGetSelected(t *testing.T) {
 		240,
 		720,
 		2160,
-	}, nil, nil)
+	}, nil, nil, nil)
 	require.NoError(t, err)
 
 	cases := []struct {
@@ -431,7 +434,7 @@ func TestCompactionFailWillCleanUpTempDir(t *testing.T) {
 		240,
 		720,
 		2160,
-	}, nil, nil)
+	}, nil, nil, nil)
 	require.NoError(t, err)
 
 	tmpdir, err := ioutil.TempDir("", "test")
@@ -490,6 +493,8 @@ func TestCompaction_populateBlock(t *testing.T) {
 		inputSeriesSamples [][]seriesSamples
 		compactMinTime     int64
 		compactMaxTime     int64 // When not defined the test runner sets a default of math.MaxInt64.
+		modifiers          []Modifier
+		expChanges         string
 		expSeriesSamples   []seriesSamples
 		expErr             error
 	}{
@@ -932,6 +937,138 @@ func TestCompaction_populateBlock(t *testing.T) {
 				},
 			},
 		},
+		{
+			title: "1 block + relabel modifier, delete first series",
+			inputSeriesSamples: [][]seriesSamples{
+				{
+					{lset: map[string]string{"a": "1"},
+						chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}, {10, 10}, {11, 11}, {20, 20}}}},
+					{lset: map[string]string{"a": "2"},
+						chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}}, {{10, 10}, {11, 11}, {20, 20}, {25, 25}}}},
+					{lset: map[string]string{"a": "3"},
+						chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}, {10, 13}, {11, 11}, {20, 20}}}},
+				},
+			},
+			// Drop first series.
+			modifiers: []Modifier{WithRelabelModifier(
+				&relabel.Config{
+					Action:       relabel.Drop,
+					Regex:        relabel.MustNewRegexp("1"),
+					SourceLabels: model.LabelNames{"a"},
+				},
+			)},
+			expSeriesSamples: []seriesSamples{
+				{lset: map[string]string{"a": "2"},
+					chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}}, {{10, 10}, {11, 11}, {20, 20}, {25, 25}}}},
+				{lset: map[string]string{"a": "3"},
+					chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}, {10, 13}, {11, 11}, {20, 20}}}},
+			},
+			expChanges: "Deleted {a=\"1\"} [{0 20}]\n",
+		},
+		{
+			title: "1 block + relabel modifier, series reordered",
+			inputSeriesSamples: [][]seriesSamples{
+				{
+					{lset: map[string]string{"a": "1"},
+						chunks: [][]sample{{{0, 0}, {1, -1}, {2, -2}, {10, -10}, {11, -11}, {20, -20}}}},
+					{lset: map[string]string{"a": "2"},
+						chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}}, {{10, 10}, {11, 11}, {20, 20}, {25, 25}}}},
+				},
+			},
+			// {a="1"} will be relabeled to {a="3"} while {a="2"} will be relabeled to {a="0"}.
+			modifiers: []Modifier{WithRelabelModifier(
+				&relabel.Config{
+					Action:       relabel.Replace,
+					Regex:        relabel.MustNewRegexp("1"),
+					SourceLabels: model.LabelNames{"a"},
+					TargetLabel:  "a",
+					Replacement:  "3",
+				},
+				&relabel.Config{
+					Action:       relabel.Replace,
+					Regex:        relabel.MustNewRegexp("2"),
+					SourceLabels: model.LabelNames{"a"},
+					TargetLabel:  "a",
+					Replacement:  "0",
+				},
+			)},
+			expSeriesSamples: []seriesSamples{
+				{lset: map[string]string{"a": "0"},
+					chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}}, {{10, 10}, {11, 11}, {20, 20}, {25, 25}}}},
+				{lset: map[string]string{"a": "3"},
+					chunks: [][]sample{{{0, 0}, {1, -1}, {2, -2}, {10, -10}, {11, -11}, {20, -20}}}},
+			},
+			expChanges: "Relabelled {a=\"1\"} {a=\"3\"}\nRelabelled {a=\"2\"} {a=\"0\"}\n",
+		},
+		{
+			title: "1 block + relabel modifier, series deleted because of no labels left after relabel",
+			inputSeriesSamples: [][]seriesSamples{
+				{
+					{lset: map[string]string{"a": "1"},
+						chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}}, {{10, 10}, {11, 11}, {20, 20}, {25, 25}}}},
+					{lset: map[string]string{"a": "2"},
+						chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}}, {{10, 10}, {11, 11}, {20, 20}, {25, 25}}}},
+				},
+			},
+			// Drop all label name "a".
+			modifiers: []Modifier{WithRelabelModifier(
+				&relabel.Config{
+					Action: relabel.LabelDrop,
+					Regex:  relabel.MustNewRegexp("a"),
+				},
+			)},
+			expSeriesSamples: nil,
+			expChanges:       "Deleted {a=\"1\"} [{0 25}]\nDeleted {a=\"2\"} [{0 25}]\n",
+		},
+		{
+			title: "1 block + relabel modifier, series 1 is deleted because of no labels left after relabel",
+			inputSeriesSamples: [][]seriesSamples{
+				{
+					{lset: map[string]string{"a": "1"},
+						chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}}, {{10, 10}, {11, 11}, {20, 20}, {25, 25}}}},
+					{lset: map[string]string{"a": "2", "b": "1"},
+						chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}}, {{10, 10}, {11, 11}, {20, 20}, {25, 25}}}},
+				},
+			},
+			// Drop all label name "a".
+			modifiers: []Modifier{WithRelabelModifier(
+				&relabel.Config{
+					Action: relabel.LabelDrop,
+					Regex:  relabel.MustNewRegexp("a"),
+				},
+			)},
+			expSeriesSamples: []seriesSamples{
+				{lset: map[string]string{"b": "1"},
+					chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}}, {{10, 10}, {11, 11}, {20, 20}, {25, 25}}}},
+			},
+			expChanges: "Deleted {a=\"1\"} [{0 25}]\nRelabelled {a=\"2\", b=\"1\"} {b=\"1\"}\n",
+		},
+		{
+			title: "1 block + relabel modifier, series merged after relabeling",
+			inputSeriesSamples: [][]seriesSamples{
+				{
+					{lset: map[string]string{"a": "1"},
+						chunks: [][]sample{{{1, 1}, {2, 2}, {10, 10}, {20, 20}}}},
+					{lset: map[string]string{"a": "2"},
+						chunks: [][]sample{{{0, 0}, {2, 2}, {3, 3}}, {{4, 4}, {11, 11}, {20, 20}, {25, 25}}}},
+				},
+			},
+			// Replace values of label name "a" with "0".
+			modifiers: []Modifier{WithRelabelModifier(
+				&relabel.Config{
+					Action:       relabel.Replace,
+					Regex:        relabel.MustNewRegexp("1|2"),
+					SourceLabels: model.LabelNames{"a"},
+					TargetLabel:  "a",
+					Replacement:  "0",
+				},
+			)},
+			expSeriesSamples: []seriesSamples{
+				{lset: map[string]string{"a": "0"},
+					chunks: [][]sample{{{0, 0}, {1, 1}, {2, 2}, {3, 3}, {4, 4}, {10, 10}, {11, 11}, {20, 20}, {25, 25}}}},
+			},
+			expChanges: "Relabelled {a=\"1\"} {a=\"0\"}\nRelabelled {a=\"2\"} {a=\"0\"}\n",
+		},
 	} {
 		t.Run(tc.title, func(t *testing.T) {
 			blocks := make([]BlockReader, 0, len(tc.inputSeriesSamples))
@@ -940,7 +1077,17 @@ func TestCompaction_populateBlock(t *testing.T) {
 				blocks = append(blocks, &mockBReader{ir: ir, cr: cr, mint: mint, maxt: maxt})
 			}
 
-			c, err := NewLeveledCompactor(context.Background(), nil, nil, []int64{0}, nil, nil)
+			var modifierWithChangelog *ModifiersWithChangeLog
+			changes := &bytes.Buffer{}
+			if len(tc.modifiers) > 0 {
+				cl := NewChangeLog(changes)
+				modifierWithChangelog = &ModifiersWithChangeLog{
+					changelog: cl,
+					modifiers: tc.modifiers,
+				}
+			}
+
+			c, err := NewLeveledCompactor(context.Background(), nil, nil, []int64{0}, nil, nil, modifierWithChangelog)
 			require.NoError(t, err)
 
 			meta := &BlockMeta{
@@ -990,6 +1137,10 @@ func TestCompaction_populateBlock(t *testing.T) {
 				raw = append(raw, ss)
 			}
 			require.Equal(t, tc.expSeriesSamples, raw)
+
+			if len(tc.modifiers) > 0 {
+				require.Equal(t, tc.expChanges, changes.String())
+			}
 
 			// Check if stats are calculated properly.
 			s := BlockStats{NumSeries: uint64(len(tc.expSeriesSamples))}
@@ -1065,7 +1216,7 @@ func BenchmarkCompaction(b *testing.B) {
 				blockDirs = append(blockDirs, block.Dir())
 			}
 
-			c, err := NewLeveledCompactor(context.Background(), nil, log.NewNopLogger(), []int64{0}, nil, nil)
+			c, err := NewLeveledCompactor(context.Background(), nil, log.NewNopLogger(), []int64{0}, nil, nil, nil)
 			require.NoError(b, err)
 
 			b.ResetTimer()

@@ -464,7 +464,7 @@ func relabelBlock(path, blockID, file string, addChangelog bool) error {
 		tsdb.ExponentialBlockRanges(tsdb.DefaultOptions().MinBlockDuration, 3, 5),
 		chunkenc.NewPool(),
 		nil,
-		tsdb.WithRelabelModifier(changeLog, relabelConfig...),
+		tsdb.NewModifiersWithChangeLog(changeLog, tsdb.WithRelabelModifier(relabelConfig...)),
 	)
 	if err != nil {
 		return errors.Wrap(err, "create leveled compactor")
