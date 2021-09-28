@@ -30,7 +30,7 @@ type changeLog struct {
 	w io.Writer
 }
 
-func NewChangeLog(w io.Writer) *changeLog {
+func NewChangeLog(w io.Writer) ChangeLogger {
 	return &changeLog{
 		w: w,
 	}
