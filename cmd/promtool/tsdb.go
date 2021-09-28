@@ -17,10 +17,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"github.com/prometheus/prometheus/pkg/relabel"
-	"github.com/prometheus/prometheus/tsdb/chunkenc"
-	"github.com/prometheus/prometheus/tsdb/index"
-	"gopkg.in/yaml.v2"
 	"io"
 	"io/ioutil"
 	"math"
@@ -38,12 +34,16 @@ import (
 	"github.com/alecthomas/units"
 	"github.com/go-kit/log"
 	"github.com/pkg/errors"
+	"gopkg.in/yaml.v2"
 
 	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/prometheus/pkg/relabel"
 	"github.com/prometheus/prometheus/tsdb"
+	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	tsdb_errors "github.com/prometheus/prometheus/tsdb/errors"
 	"github.com/prometheus/prometheus/tsdb/fileutil"
+	"github.com/prometheus/prometheus/tsdb/index"
 )
 
 const timeDelta = 30000
