@@ -61,7 +61,7 @@ type Compactor interface {
 
 	// Write persists a Block into a directory.
 	// No Block is written when resulting Block has 0 samples, and returns empty ulid.ULID{}.
-	Write(dest string, b BlockReader, mint, maxt int64, parent *BlockMeta) (ulid.ULID, error)
+	Write(dest string, b BlockReader, mint, maxt int64, parent *BlockMeta, modifiers ...Modifier) (ulid.ULID, error)
 
 	// Compact runs compaction against the provided directories. Must
 	// only be called concurrently with results of Plan().
@@ -83,7 +83,7 @@ type LeveledCompactor struct {
 	ctx                      context.Context
 	maxBlockChunkSegmentSize int64
 	mergeFunc                storage.VerticalChunkSeriesMergeFunc
-	modifiersWithChangeLog   *ModifiersWithChangeLog
+	changeLog                ChangeLogger
 }
 
 type compactorMetrics struct {
@@ -147,11 +147,11 @@ func newCompactorMetrics(r prometheus.Registerer) *compactorMetrics {
 }
 
 // NewLeveledCompactor returns a LeveledCompactor.
-func NewLeveledCompactor(ctx context.Context, r prometheus.Registerer, l log.Logger, ranges []int64, pool chunkenc.Pool, mergeFunc storage.VerticalChunkSeriesMergeFunc, modifiersWithChangeLog *ModifiersWithChangeLog) (*LeveledCompactor, error) {
-	return NewLeveledCompactorWithChunkSize(ctx, r, l, ranges, pool, chunks.DefaultChunkSegmentSize, mergeFunc, modifiersWithChangeLog)
+func NewLeveledCompactor(ctx context.Context, r prometheus.Registerer, l log.Logger, ranges []int64, pool chunkenc.Pool, mergeFunc storage.VerticalChunkSeriesMergeFunc, changeLog ChangeLogger) (*LeveledCompactor, error) {
+	return NewLeveledCompactorWithChunkSize(ctx, r, l, ranges, pool, chunks.DefaultChunkSegmentSize, mergeFunc, changeLog)
 }
 
-func NewLeveledCompactorWithChunkSize(ctx context.Context, r prometheus.Registerer, l log.Logger, ranges []int64, pool chunkenc.Pool, maxBlockChunkSegmentSize int64, mergeFunc storage.VerticalChunkSeriesMergeFunc, modifiersWithChangeLog *ModifiersWithChangeLog) (*LeveledCompactor, error) {
+func NewLeveledCompactorWithChunkSize(ctx context.Context, r prometheus.Registerer, l log.Logger, ranges []int64, pool chunkenc.Pool, maxBlockChunkSegmentSize int64, mergeFunc storage.VerticalChunkSeriesMergeFunc, changeLog ChangeLogger) (*LeveledCompactor, error) {
 	if len(ranges) == 0 {
 		return nil, errors.Errorf("at least one range must be provided")
 	}
@@ -172,7 +172,7 @@ func NewLeveledCompactorWithChunkSize(ctx context.Context, r prometheus.Register
 		ctx:                      ctx,
 		maxBlockChunkSegmentSize: maxBlockChunkSegmentSize,
 		mergeFunc:                mergeFunc,
-		modifiersWithChangeLog:   modifiersWithChangeLog,
+		changeLog:                changeLog,
 	}, nil
 }
 
@@ -436,7 +436,7 @@ func (c *LeveledCompactor) Compact(dest string, dirs []string, open []*Block) (u
 	uid = ulid.MustNew(ulid.Now(), rand.Reader)
 
 	meta := CompactBlockMetas(uid, metas...)
-	err = c.write(dest, meta, blocks...)
+	err = c.write(dest, meta, blocks)
 	if err == nil {
 		if meta.Stats.NumSamples == 0 {
 			for _, b := range bs {
@@ -483,7 +483,7 @@ func (c *LeveledCompactor) Compact(dest string, dirs []string, open []*Block) (u
 	return uid, errs.Err()
 }
 
-func (c *LeveledCompactor) Write(dest string, b BlockReader, mint, maxt int64, parent *BlockMeta) (ulid.ULID, error) {
+func (c *LeveledCompactor) Write(dest string, b BlockReader, mint, maxt int64, parent *BlockMeta, modifiers ...Modifier) (ulid.ULID, error) {
 	start := time.Now()
 
 	uid := ulid.MustNew(ulid.Now(), rand.Reader)
@@ -502,7 +502,7 @@ func (c *LeveledCompactor) Write(dest string, b BlockReader, mint, maxt int64, p
 		}
 	}
 
-	err := c.write(dest, meta, b)
+	err := c.write(dest, meta, []BlockReader{b}, modifiers...)
 	if err != nil {
 		return uid, err
 	}
@@ -547,7 +547,7 @@ func (w *instrumentedChunkWriter) WriteChunks(chunks ...chunks.Meta) error {
 }
 
 // write creates a new block that is the union of the provided blocks into dir.
-func (c *LeveledCompactor) write(dest string, meta *BlockMeta, blocks ...BlockReader) (err error) {
+func (c *LeveledCompactor) write(dest string, meta *BlockMeta, blocks []BlockReader, modifiers ...Modifier) (err error) {
 	dir := filepath.Join(dest, meta.ULID.String())
 	tmp := dir + tmpForCreationBlockDirSuffix
 	var closers []io.Closer
@@ -595,7 +595,7 @@ func (c *LeveledCompactor) write(dest string, meta *BlockMeta, blocks ...BlockRe
 	}
 	closers = append(closers, indexw)
 
-	if err := c.populateBlock(blocks, meta, indexw, chunkw); err != nil {
+	if err := c.populateBlock(blocks, meta, indexw, chunkw, modifiers...); err != nil {
 		return errors.Wrap(err, "populate block")
 	}
 
@@ -663,7 +663,7 @@ func (c *LeveledCompactor) write(dest string, meta *BlockMeta, blocks ...BlockRe
 // populateBlock fills the index and chunk writers with new data gathered as the union
 // of the provided blocks. It returns meta information for the new block.
 // It expects sorted blocks input by mint.
-func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, indexw IndexWriter, chunkw ChunkWriter) (err error) {
+func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, indexw IndexWriter, chunkw ChunkWriter, modifiers ...Modifier) (err error) {
 	if len(blocks) == 0 {
 		return errors.New("cannot populate block from no readers")
 	}
@@ -744,12 +744,10 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 		set = storage.NewMergeChunkSeriesSet(sets, c.mergeFunc)
 	}
 
-	if c.modifiersWithChangeLog != nil {
-		for _, modifier := range c.modifiersWithChangeLog.modifiers {
-			symbols, set, err = modifier.Modify(symbols, set, c.modifiersWithChangeLog.changelog)
-			if err != nil {
-				return errors.Wrap(err, "modify")
-			}
+	for _, modifier := range modifiers {
+		symbols, set, err = modifier.Modify(symbols, set, c.changeLog)
+		if err != nil {
+			return errors.Wrap(err, "modify")
 		}
 	}
 

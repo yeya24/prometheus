@@ -443,7 +443,7 @@ func TestCompactionFailWillCleanUpTempDir(t *testing.T) {
 		require.NoError(t, os.RemoveAll(tmpdir))
 	}()
 
-	require.Error(t, compactor.write(tmpdir, &BlockMeta{}, erringBReader{}))
+	require.Error(t, compactor.write(tmpdir, &BlockMeta{}, []BlockReader{erringBReader{}}))
 	_, err = os.Stat(filepath.Join(tmpdir, BlockMeta{}.ULID.String()) + tmpForCreationBlockDirSuffix)
 	require.True(t, os.IsNotExist(err), "directory is not cleaned up")
 }
@@ -1077,17 +1077,13 @@ func TestCompaction_populateBlock(t *testing.T) {
 				blocks = append(blocks, &mockBReader{ir: ir, cr: cr, mint: mint, maxt: maxt})
 			}
 
-			var modifierWithChangelog *ModifiersWithChangeLog
+			var cl ChangeLogger
 			changes := &bytes.Buffer{}
 			if len(tc.modifiers) > 0 {
-				cl := NewChangeLog(changes)
-				modifierWithChangelog = &ModifiersWithChangeLog{
-					changelog: cl,
-					modifiers: tc.modifiers,
-				}
+				cl = NewChangeLog(changes)
 			}
 
-			c, err := NewLeveledCompactor(context.Background(), nil, nil, []int64{0}, nil, nil, modifierWithChangelog)
+			c, err := NewLeveledCompactor(context.Background(), nil, nil, []int64{0}, nil, nil, cl)
 			require.NoError(t, err)
 
 			meta := &BlockMeta{
@@ -1099,7 +1095,7 @@ func TestCompaction_populateBlock(t *testing.T) {
 			}
 
 			iw := &mockIndexWriter{}
-			err = c.populateBlock(blocks, meta, iw, nopChunkWriter{})
+			err = c.populateBlock(blocks, meta, iw, nopChunkWriter{}, tc.modifiers...)
 			if tc.expErr != nil {
 				require.Error(t, err)
 				require.Equal(t, tc.expErr.Error(), err.Error())
