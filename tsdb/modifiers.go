@@ -54,19 +54,6 @@ type Modifier interface {
 	Modify(sym index.StringIter, set storage.ChunkSeriesSet, changeLog ChangeLogger) (index.StringIter, storage.ChunkSeriesSet, error)
 }
 
-// ModifiersWithChangeLog is a wrapper for a single change logger instance and multiple modifiers.
-type ModifiersWithChangeLog struct {
-	changelog ChangeLogger
-	modifiers []Modifier
-}
-
-func NewModifiersWithChangeLog(log ChangeLogger, modifiers ...Modifier) *ModifiersWithChangeLog {
-	return &ModifiersWithChangeLog{
-		changelog: log,
-		modifiers: modifiers,
-	}
-}
-
 // RelabelModifier modifies index via relabeling with changelog support.
 type RelabelModifier struct {
 	relabels []*relabel.Config
