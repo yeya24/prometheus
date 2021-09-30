@@ -470,7 +470,7 @@ func relabelBlock(path, blockID, file string, addChangelog bool) error {
 		return errors.Wrap(err, "create leveled compactor")
 	}
 
-	newID, err := compactor.Write(path, block, meta.MinTime, meta.MaxTime, &meta)
+	newID, err := compactor.Write(path, block, meta.MinTime, meta.MaxTime, &meta, tsdb.WithRelabelModifier(relabelConfig...))
 	if err != nil {
 		return errors.Wrap(err, "create new block")
 	}
