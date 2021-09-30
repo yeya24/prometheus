@@ -15,9 +15,11 @@ package tsdb
 
 import (
 	"fmt"
+	"github.com/prometheus/prometheus/pkg/timestamp"
 	"io"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/pkg/relabel"
@@ -166,4 +168,105 @@ func (s *mergeChunkSeries) Iterator() chunks.Iterator {
 	}
 
 	return storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge)(s.cs...).Iterator()
+}
+
+type retentionConf struct {
+	retentionTime int64
+	matchers      [][]*labels.Matcher
+}
+
+type RetentionModifier struct {
+	retentions []*retentionConf
+}
+
+func WithRetentionModifier(now time.Time, defaultRetentionTime int64, config []*RetentionConfig) *RetentionModifier {
+	retentions := make([]*retentionConf, 0)
+	for _, c := range config {
+		if c.Retention > defaultRetentionTime {
+			retentions = append(retentions, &retentionConf{
+				retentionTime: timestamp.FromTime(now.Add(time.Duration(-c.Retention) * time.Millisecond)),
+				matchers:      c.Matchers,
+			})
+		}
+	}
+	return &RetentionModifier{
+		retentions: retentions,
+	}
+}
+
+func (d *RetentionModifier) Modify(_ index.StringIter, set storage.ChunkSeriesSet, _ ChangeLogger) (index.StringIter, storage.ChunkSeriesSet, error) {
+	// Gather symbols.
+	symbols := make(map[string]struct{})
+	chunkSerieses := make([]storage.ChunkSeries, 0)
+
+SeriesLoop:
+	for set.Next() {
+		s := set.At()
+		lbls := s.Labels()
+		chksIter := s.Iterator()
+
+		for _, retention := range d.retentions {
+		MatchersLoop:
+			for _, matchers := range retention.matchers {
+				for _, m := range matchers {
+					v := lbls.Get(m.Name)
+
+					// Only if all matchers in the deletion request are matched can we proceed to deletion.
+					if v == "" || !m.Matches(v) {
+						continue MatchersLoop
+					}
+				}
+
+				// We found a match for the given series.
+				var chk chunks.Meta
+				var chks []chunks.Meta
+				for chksIter.Next() {
+					chk = chksIter.At()
+					// Beyond the time duration.
+					if chk.MaxTime < retention.retentionTime {
+						continue
+					}
+
+					if chks == nil {
+						chks = make([]chunks.Meta, 0)
+					}
+					chks = append(chks, chk)
+					break
+				}
+
+				if chks != nil {
+					for chksIter.Next() {
+						chks = append(chks, chksIter.At())
+					}
+				}
+
+				if err := chksIter.Err(); err != nil {
+					return nil, nil, err
+				}
+
+				if chks != nil {
+					for _, lbl := range lbls {
+						symbols[lbl.Name] = struct{}{}
+						symbols[lbl.Value] = struct{}{}
+					}
+				}
+
+				chunkSerieses = append(chunkSerieses, &storage.ChunkSeriesEntry{
+					Lset: lbls,
+					ChunkIteratorFn: func() chunks.Iterator {
+						return storage.NewListChunkSeriesIterator(chks...)
+					},
+				})
+				continue SeriesLoop
+			}
+		}
+	}
+
+	symbolsSlice := make([]string, 0, len(symbols))
+	for s := range symbols {
+		symbolsSlice = append(symbolsSlice, s)
+	}
+	sort.Strings(symbolsSlice)
+
+	return index.NewStringListIter(symbolsSlice), storage.NewListChunkSeriesSet(chunkSerieses...), nil
 }

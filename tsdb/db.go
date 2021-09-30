@@ -1287,17 +1287,16 @@ func BeyondSizeRetention(db *DB, blocks []*Block) (deletable map[ulid.ULID]struc
 // When the map contains a non nil block object it means it is loaded in memory
 // so needs to be closed first as it might need to wait for pending readers to complete.
 func (db *DB) deleteBlocks(blocks map[ulid.ULID]*Block) error {
+	now := time.Now()
 	for ulid, block := range blocks {
+		meta := block.Meta()
+		db.compactor.Write(db.dir, block, block.MinTime(), block.MaxTime(), &meta, WithRetentionModifier(now, db.opts.RetentionDuration, db.opts.RetentionConfigs))
 		if block != nil {
 			if err := block.Close(); err != nil {
 				level.Warn(db.logger).Log("msg", "Closing block failed", "err", err, "block", ulid)
 			}
 		}
 
-		for _, retention := range db.opts.RetentionConfigs {
-
-		}
-		db.compactor.Write()
 		toDelete := filepath.Join(db.dir, ulid.String())
 		if _, err := os.Stat(toDelete); os.IsNotExist(err) {
 			// Noop.

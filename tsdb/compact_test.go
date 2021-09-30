@@ -1069,6 +1069,31 @@ func TestCompaction_populateBlock(t *testing.T) {
 			},
 			expChanges: "Relabelled {a=\"1\"} {a=\"0\"}\nRelabelled {a=\"2\"} {a=\"0\"}\n",
 		},
+		{
+			title: "retention modifier",
+			inputSeriesSamples: [][]seriesSamples{
+				{
+					{lset: map[string]string{"a": "1"},
+						chunks: [][]sample{{{1, 1}, {2, 2}, {10, 10}, {20, 20}}, {{30, 30}, {40, 40}}}},
+				},
+			},
+			// Replace values of label name "a" with "0".
+			modifiers: []Modifier{&RetentionModifier{
+				retentions: []*retentionConf{
+					{
+						retentionTime: 25,
+						matchers: [][]*labels.Matcher{
+							{labels.MustNewMatcher(labels.MatchEqual, "a", "1")},
+						},
+					},
+				},
+			}},
+			expSeriesSamples: []seriesSamples{
+				{lset: map[string]string{"a": "1"},
+					chunks: [][]sample{{{30, 30}, {40, 40}}}},
+			},
+			expChanges: "",
+		},
 	} {
 		t.Run(tc.title, func(t *testing.T) {
 			blocks := make([]BlockReader, 0, len(tc.inputSeriesSamples))
