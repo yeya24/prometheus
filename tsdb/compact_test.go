@@ -1094,6 +1094,31 @@ func TestCompaction_populateBlock(t *testing.T) {
 			},
 			expChanges: "",
 		},
+		{
+			title: "retention query modifier",
+			inputSeriesSamples: [][]seriesSamples{
+				{
+					{lset: map[string]string{"a": "1", "b": "2"},
+						chunks: [][]sample{{{1, 1}, {2, 2}, {10, 10}, {20, 20}}, {{30, 30}, {40, 40}}}},
+				},
+			},
+			// Replace values of label name "a" with "0".
+			modifiers: []Modifier{&RetentionQueryModifier{
+				retentions: []*retentionConf{
+					{
+						retentionTime: 25,
+						matchers: [][]*labels.Matcher{
+							{labels.MustNewMatcher(labels.MatchEqual, "a", "1")},
+						},
+					},
+				},
+			}},
+			expSeriesSamples: []seriesSamples{
+				{lset: map[string]string{"a": "1", "b": "2"},
+					chunks: [][]sample{{{40, 40}}}},
+			},
+			expChanges: "",
+		},
 	} {
 		t.Run(tc.title, func(t *testing.T) {
 			blocks := make([]BlockReader, 0, len(tc.inputSeriesSamples))
@@ -1120,7 +1145,23 @@ func TestCompaction_populateBlock(t *testing.T) {
 			}
 
 			iw := &mockIndexWriter{}
-			err = c.populateBlock(blocks, meta, iw, nopChunkWriter{}, tc.modifiers...)
+			err = c.populateBlock(blocks, meta, iw, nopChunkWriter{}, &RetentionQueryModifier{
+				retentions: []*retentionConf{
+					{
+						retentionTime: 25,
+						matchers: [][]*labels.Matcher{
+							{labels.MustNewMatcher(labels.MatchEqual, "a", "1")},
+						},
+					},
+					{
+						retentionTime: 35,
+						matchers: [][]*labels.Matcher{
+							{labels.MustNewMatcher(labels.MatchEqual, "b", "2")},
+						},
+					},
+				},
+				block: blocks[0],
+			})
 			if tc.expErr != nil {
 				require.Error(t, err)
 				require.Equal(t, tc.expErr.Error(), err.Error())

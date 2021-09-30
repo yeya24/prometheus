@@ -1287,11 +1287,25 @@ func BeyondSizeRetention(db *DB, blocks []*Block) (deletable map[ulid.ULID]struc
 // When the map contains a non nil block object it means it is loaded in memory
 // so needs to be closed first as it might need to wait for pending readers to complete.
 func (db *DB) deleteBlocks(blocks map[ulid.ULID]*Block) error {
-	now := time.Now()
+	retentions := newRetentionConfigs(time.Now(), db.opts.RetentionDuration, db.opts.RetentionConfigs)
+	var modifierBuilderFunc func(block BlockReader) *RetentionQueryModifier
+	if len(retentions) > 0 {
+		modifierBuilderFunc = NewRetentionQueryModifierBuilder(retentions)
+	}
+
+	// TODO(yeya24): load newly created blocks to db?
 	for ulid, block := range blocks {
-		meta := block.Meta()
-		db.compactor.Write(db.dir, block, block.MinTime(), block.MaxTime(), &meta, WithRetentionModifier(now, db.opts.RetentionDuration, db.opts.RetentionConfigs))
 		if block != nil {
+			meta := block.Meta()
+			// If custom series retention exists, builds modifier based on block and rewrite a new block each time.
+			if modifierBuilderFunc != nil {
+				newID, err := db.compactor.Write(db.dir, block, block.MinTime(), block.MaxTime(), &meta, modifierBuilderFunc(block))
+				if err != nil {
+					return errors.Wrapf(err, "write new block %s from %s", newID.String(), ulid.String())
+				}
+				level.Info(db.logger).Log("msg", "Rewriting new block from custom series retention", "new", newID, "old", ulid)
+			}
+
 			if err := block.Close(); err != nil {
 				level.Warn(db.logger).Log("msg", "Closing block failed", "err", err, "block", ulid)
 			}

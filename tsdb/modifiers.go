@@ -175,11 +175,7 @@ type retentionConf struct {
 	matchers      [][]*labels.Matcher
 }
 
-type RetentionModifier struct {
-	retentions []*retentionConf
-}
-
-func WithRetentionModifier(now time.Time, defaultRetentionTime int64, config []*RetentionConfig) *RetentionModifier {
+func newRetentionConfigs(now time.Time, defaultRetentionTime int64, config []*RetentionConfig) []*retentionConf {
 	retentions := make([]*retentionConf, 0)
 	for _, c := range config {
 		if c.Retention > defaultRetentionTime {
@@ -189,6 +185,15 @@ func WithRetentionModifier(now time.Time, defaultRetentionTime int64, config []*
 			})
 		}
 	}
+	return retentions
+}
+
+// Go through all series and check retention matchers.
+type RetentionModifier struct {
+	retentions []*retentionConf
+}
+
+func WithRetentionModifier(retentions []*retentionConf) *RetentionModifier {
 	return &RetentionModifier{
 		retentions: retentions,
 	}
@@ -269,4 +274,56 @@ SeriesLoop:
 	sort.Strings(symbolsSlice)
 
 	return index.NewStringListIter(symbolsSlice), storage.NewListChunkSeriesSet(chunkSerieses...), nil
+}
+
+// Query based retention modifier. No need to go througth all series.
+type RetentionQueryModifier struct {
+	retentions []*retentionConf
+	block      BlockReader
+}
+
+func NewRetentionQueryModifierBuilder(retentions []*retentionConf) func(block BlockReader) *RetentionQueryModifier {
+	return func(block BlockReader) *RetentionQueryModifier {
+		return &RetentionQueryModifier{block: block, retentions: retentions}
+	}
+}
+
+func (d *RetentionQueryModifier) Modify(_ index.StringIter, _ storage.ChunkSeriesSet, _ ChangeLogger) (index.StringIter, storage.ChunkSeriesSet, error) {
+	// Gather symbols.
+	symbols := make(map[string]struct{})
+	sets := make([]storage.ChunkSeriesSet, 0)
+
+	for _, retention := range d.retentions {
+		cq, err := NewBlockChunkQuerier(d.block, retention.retentionTime, d.block.Meta().MaxTime)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer cq.Close()
+		for _, matchers := range retention.matchers {
+			css := cq.Select(false, nil, matchers...)
+			// Iterate through series to build symbols.
+			for css.Next() {
+				lbls := css.At().Labels()
+				for _, lbl := range lbls {
+					symbols[lbl.Name] = struct{}{}
+					symbols[lbl.Value] = struct{}{}
+				}
+			}
+			if err := css.Err(); err != nil {
+				return nil, nil, err
+			}
+
+			// Query again to build merged chunk seriesSet.
+			css = cq.Select(false, nil, matchers...)
+			sets = append(sets, css)
+		}
+	}
+
+	symbolsSlice := make([]string, 0, len(symbols))
+	for s := range symbols {
+		symbolsSlice = append(symbolsSlice, s)
+	}
+	sort.Strings(symbolsSlice)
+	res := storage.NewMergeChunkSeriesSet(sets, storage.NewDedupChunkSeriesMerger())
+	return index.NewStringListIter(symbolsSlice), res, nil
 }

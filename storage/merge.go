@@ -712,3 +712,80 @@ func (h *chunkIteratorHeap) Pop() interface{} {
 	*h = old[0 : n-1]
 	return x
 }
+
+func NewDedupChunkSeriesMerger() VerticalChunkSeriesMergeFunc {
+	return func(series ...ChunkSeries) ChunkSeries {
+		if len(series) == 0 {
+			return nil
+		}
+		return &ChunkSeriesEntry{
+			Lset: series[0].Labels(),
+			ChunkIteratorFn: func() chunks.Iterator {
+				var iter chunks.Iterator
+				var h chunkIteratorMaxHeap
+				for _, s := range series {
+					iter = s.Iterator()
+					if iter.Next() {
+						heap.Push(&h, iter)
+					}
+
+				}
+				if len(h) == 0 {
+					return noopChunksIterator{}
+				}
+				return &expandedChunkIterator{iter: heap.Pop(&h).(chunks.Iterator)}
+			},
+		}
+	}
+}
+
+type expandedChunkIterator struct {
+	expanded bool
+	iter     chunks.Iterator
+}
+
+func (c *expandedChunkIterator) At() chunks.Meta {
+	return c.iter.At()
+}
+
+func (c *expandedChunkIterator) Next() bool {
+	if !c.expanded {
+		c.expanded = true
+		return true
+	}
+
+	return c.iter.Next()
+}
+
+func (c *expandedChunkIterator) Err() error {
+	return c.iter.Err()
+}
+
+type chunkIteratorMaxHeap []chunks.Iterator
+
+func (h chunkIteratorMaxHeap) Len() int      { return len(h) }
+func (h chunkIteratorMaxHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h chunkIteratorMaxHeap) Less(i, j int) bool {
+	at := h[i].At()
+	bt := h[j].At()
+	return at.MinTime > bt.MinTime
+}
+
+func (h *chunkIteratorMaxHeap) Push(x interface{}) {
+	*h = append(*h, x.(chunks.Iterator))
+}
+
+func (h *chunkIteratorMaxHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
+type noopChunksIterator struct{}
+
+func (c noopChunksIterator) At() chunks.Meta { return chunks.Meta{} }
+func (c noopChunksIterator) Next() bool      { return false }
+func (c noopChunksIterator) Err() error      { return nil }
