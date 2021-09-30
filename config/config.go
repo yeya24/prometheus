@@ -15,6 +15,7 @@ package config
 
 import (
 	"fmt"
+	"github.com/prometheus/prometheus/promql/parser"
 	"io/ioutil"
 	"net/url"
 	"os"
@@ -205,6 +206,32 @@ type Config struct {
 
 	RemoteWriteConfigs []*RemoteWriteConfig `yaml:"remote_write,omitempty"`
 	RemoteReadConfigs  []*RemoteReadConfig  `yaml:"remote_read,omitempty"`
+	RetentionConfigs   []*RetentionConfig   `yaml:"retention_configs,omitempty"`
+}
+
+type RetentionConfig struct {
+	Retention model.Duration `yaml:"retention"`
+	Matchers  Matchers       `yaml:"matchers"`
+}
+
+// Matchers is label.Matchers with an added UnmarshalYAML method to implement the yaml.Unmarshaler interface
+// and MarshalYAML to implement the yaml.Marshaler interface.
+type Matchers [][]*labels.Matcher
+
+// UnmarshalYAML implements the yaml.Unmarshaler interface for Matchers.
+func (m *Matchers) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var lines []string
+	if err := unmarshal(&lines); err != nil {
+		return err
+	}
+	for _, line := range lines {
+		ms, err := parser.ParseMetricSelector(line)
+		if err != nil {
+			return err
+		}
+		*m = append(*m, ms)
+	}
+	return nil
 }
 
 // SetDirectory joins any relative file paths with dir.

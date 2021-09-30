@@ -816,6 +816,13 @@ func main() {
 	{
 		// TSDB.
 		opts := cfg.tsdb.ToTSDBOptions()
+		opts.RetentionConfigs = make([]*tsdb.RetentionConfig, len(cfgFile.RetentionConfigs))
+		for i, x := range cfgFile.RetentionConfigs {
+			opts.RetentionConfigs[i] = &tsdb.RetentionConfig{
+				Retention: int64(time.Duration(x.Retention) / time.Millisecond),
+				Matchers:  x.Matchers,
+			}
+		}
 		cancel := make(chan struct{})
 		g.Add(
 			func() error {

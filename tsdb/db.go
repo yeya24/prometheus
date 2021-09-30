@@ -17,6 +17,7 @@ package tsdb
 import (
 	"context"
 	"fmt"
+	"github.com/prometheus/prometheus/pkg/timestamp"
 	"io"
 	"io/ioutil"
 	"math"
@@ -157,6 +158,13 @@ type Options struct {
 	// MaxExemplars sets the size, in # of exemplars stored, of the single circular buffer used to store exemplars in memory.
 	// See tsdb/exemplar.go, specifically the CircularExemplarStorage struct and it's constructor NewCircularExemplarStorage.
 	MaxExemplars int64
+
+	RetentionConfigs []*RetentionConfig
+}
+
+type RetentionConfig struct {
+	Retention int64
+	Matchers  [][]*labels.Matcher
 }
 
 type BlocksToDeleteFunc func(blocks []*Block) map[ulid.ULID]struct{}
@@ -811,7 +819,7 @@ func (db *DB) run() {
 		}
 
 		select {
-		case <-time.After(1 * time.Minute):
+		case <-time.After(15 * time.Second):
 			db.cmtx.Lock()
 			if err := db.reloadBlocks(); err != nil {
 				level.Error(db.logger).Log("msg", "reloadBlocks", "err", err)
@@ -1105,6 +1113,7 @@ func (db *DB) reloadBlocks() (err error) {
 		toLoad     []*Block
 		blocksSize int64
 	)
+	now := time.Now()
 	// All deletable blocks should be unloaded.
 	// NOTE: We need to loop through loadable one more time as there might be loadable ready to be removed (replaced by compacted block).
 	for _, block := range loadable {
@@ -1113,6 +1122,16 @@ func (db *DB) reloadBlocks() (err error) {
 			continue
 		}
 
+		for _, retention := range db.opts.RetentionConfigs {
+			if db.opts.RetentionDuration == 0 || retention.Retention < db.opts.RetentionDuration {
+				maxt := timestamp.FromTime(now.Add(-time.Duration(retention.Retention)))
+				for _, matcher := range retention.Matchers {
+					if err := block.Delete(block.MinTime(), maxt, matcher...); err != nil {
+						return errors.Wrap(err, "Apply custom retention")
+					}
+				}
+			}
+		}
 		toLoad = append(toLoad, block)
 		blocksSize += block.Size()
 	}
@@ -1275,6 +1294,10 @@ func (db *DB) deleteBlocks(blocks map[ulid.ULID]*Block) error {
 			}
 		}
 
+		for _, retention := range db.opts.RetentionConfigs {
+
+		}
+		db.compactor.Write()
 		toDelete := filepath.Join(db.dir, ulid.String())
 		if _, err := os.Stat(toDelete); os.IsNotExist(err) {
 			// Noop.
