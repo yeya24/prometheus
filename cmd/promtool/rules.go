@@ -16,6 +16,10 @@ package main
 import (
 	"context"
 	"fmt"
+	json "github.com/json-iterator/go"
+	"github.com/prometheus/client_golang/api"
+	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-kit/log"
@@ -35,6 +39,213 @@ const maxSamplesInMemory = 5000
 
 type queryRangeAPI interface {
 	QueryRange(ctx context.Context, query string, r v1.Range) (model.Value, v1.Warnings, error)
+}
+
+// queryResult contains result data for a query.
+type queryResult struct {
+	Type   model.ValueType `json:"resultType"`
+	Result interface{}     `json:"result"`
+
+	// The decoded value.
+	v model.Value
+}
+
+func (qr *queryResult) UnmarshalJSON(b []byte) error {
+	v := struct {
+		Type   model.ValueType `json:"resultType"`
+		Result json.RawMessage `json:"result"`
+	}{}
+
+	err := json.Unmarshal(b, &v)
+	if err != nil {
+		return err
+	}
+
+	switch v.Type {
+	case model.ValScalar:
+		var sv model.Scalar
+		err = json.Unmarshal(v.Result, &sv)
+		qr.v = &sv
+
+	case model.ValVector:
+		var vv model.Vector
+		err = json.Unmarshal(v.Result, &vv)
+		qr.v = vv
+
+	case model.ValMatrix:
+		var mv model.Matrix
+		err = json.Unmarshal(v.Result, &mv)
+		qr.v = mv
+
+	default:
+		err = fmt.Errorf("unexpected value type %q", v.Type)
+	}
+	return err
+}
+
+type QueryRangeClient struct {
+	client       api.Client
+	downsampling time.Duration
+}
+
+func NewQueryRangeClient(client api.Client, downsampling time.Duration) *QueryRangeClient {
+	return &QueryRangeClient{
+		client:       client,
+		downsampling: downsampling,
+	}
+}
+
+func formatTime(t time.Time) string {
+	return strconv.FormatFloat(float64(t.Unix())+float64(t.Nanosecond())/1e9, 'f', -1, 64)
+}
+
+func (h *QueryRangeClient) QueryRange(ctx context.Context, query string, r v1.Range) (model.Value, v1.Warnings, error) {
+	u := h.client.URL("/api/v1/query_range", nil)
+	q := u.Query()
+
+	q.Set("query", query)
+	q.Set("start", formatTime(r.Start))
+	q.Set("end", formatTime(r.End))
+	q.Set("step", strconv.FormatFloat(r.Step.Seconds(), 'f', -1, 64))
+	q.Set("max_source_resolution", "1h")
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	_, body, warnings, err := h.Do(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var qres queryResult
+
+	return qres.v, warnings, json.Unmarshal(body, &qres)
+}
+
+// ErrorType models the different API error types.
+type ErrorType string
+
+type apiResponse struct {
+	Status    string          `json:"status"`
+	Data      json.RawMessage `json:"data"`
+	ErrorType ErrorType       `json:"errorType"`
+	Error     string          `json:"error"`
+	Warnings  []string        `json:"warnings,omitempty"`
+}
+
+func apiError(code int) bool {
+	// These are the codes that Prometheus sends when it returns an error.
+	return code == http.StatusUnprocessableEntity || code == http.StatusBadRequest
+}
+
+// AlertState models the state of an alert.
+type AlertState string
+
+// HealthStatus models the health status of a scrape target.
+type HealthStatus string
+
+// RuleType models the type of a rule.
+type RuleType string
+
+// RuleHealth models the health status of a rule.
+type RuleHealth string
+
+const (
+	// Possible values for AlertState.
+	AlertStateFiring   AlertState = "firing"
+	AlertStateInactive AlertState = "inactive"
+	AlertStatePending  AlertState = "pending"
+
+	// Possible values for ErrorType.
+	ErrBadData     ErrorType = "bad_data"
+	ErrTimeout     ErrorType = "timeout"
+	ErrCanceled    ErrorType = "canceled"
+	ErrExec        ErrorType = "execution"
+	ErrBadResponse ErrorType = "bad_response"
+	ErrServer      ErrorType = "server_error"
+	ErrClient      ErrorType = "client_error"
+
+	// Possible values for HealthStatus.
+	HealthGood    HealthStatus = "up"
+	HealthUnknown HealthStatus = "unknown"
+	HealthBad     HealthStatus = "down"
+
+	// Possible values for RuleType.
+	RuleTypeRecording RuleType = "recording"
+	RuleTypeAlerting  RuleType = "alerting"
+
+	// Possible values for RuleHealth.
+	RuleHealthGood    = "ok"
+	RuleHealthUnknown = "unknown"
+	RuleHealthBad     = "err"
+)
+
+func errorTypeAndMsgFor(resp *http.Response) (ErrorType, string) {
+	switch resp.StatusCode / 100 {
+	case 4:
+		return ErrClient, fmt.Sprintf("client error: %d", resp.StatusCode)
+	case 5:
+		return ErrServer, fmt.Sprintf("server error: %d", resp.StatusCode)
+	}
+	return ErrBadResponse, fmt.Sprintf("bad response code %d", resp.StatusCode)
+}
+
+// Error is an error returned by the API.
+type Error struct {
+	Type   ErrorType
+	Msg    string
+	Detail string
+}
+
+func (e *Error) Error() string {
+	return fmt.Sprintf("%s: %s", e.Type, e.Msg)
+}
+
+func (h *QueryRangeClient) Do(ctx context.Context, req *http.Request) (*http.Response, []byte, v1.Warnings, error) {
+	resp, body, err := h.client.Do(ctx, req)
+	if err != nil {
+		return resp, body, nil, err
+	}
+
+	code := resp.StatusCode
+
+	if code/100 != 2 && !apiError(code) {
+		errorType, errorMsg := errorTypeAndMsgFor(resp)
+		return resp, body, nil, &Error{
+			Type:   errorType,
+			Msg:    errorMsg,
+			Detail: string(body),
+		}
+	}
+
+	var result apiResponse
+
+	if http.StatusNoContent != code {
+		if jsonErr := json.Unmarshal(body, &result); jsonErr != nil {
+			return resp, body, nil, &Error{
+				Type: ErrBadResponse,
+				Msg:  jsonErr.Error(),
+			}
+		}
+	}
+
+	if apiError(code) && result.Status == "success" {
+		err = &Error{
+			Type: ErrBadResponse,
+			Msg:  "inconsistent body for response code",
+		}
+	}
+
+	if result.Status == "error" {
+		err = &Error{
+			Type: result.ErrorType,
+			Msg:  result.Error,
+		}
+	}
+
+	return resp, []byte(result.Data), result.Warnings, err
 }
 
 type ruleImporter struct {
