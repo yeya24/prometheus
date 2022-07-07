@@ -107,7 +107,7 @@ func (h *QueryRangeClient) QueryRange(ctx context.Context, query string, r v1.Ra
 	q.Set("start", formatTime(r.Start))
 	q.Set("end", formatTime(r.End))
 	q.Set("step", strconv.FormatFloat(r.Step.Seconds(), 'f', -1, 64))
-	q.Set("max_source_resolution", "1h")
+	q.Set("max_source_resolution", h.downsampling.String())
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
