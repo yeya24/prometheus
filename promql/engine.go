@@ -130,6 +130,8 @@ type QueryOpts struct {
 	EnablePerStepStats bool
 	// Lookback delta duration for this query.
 	LookbackDelta time.Duration
+	// NoStepSubqueryIntervalFn for this query.
+	NoStepSubqueryIntervalFn func(rangeMillis int64) int64
 }
 
 // query implements the Query interface.
@@ -444,12 +446,18 @@ func (ng *Engine) newQuery(q storage.Queryable, opts *QueryOpts, expr parser.Exp
 		lookbackDelta = ng.lookbackDelta
 	}
 
+	noStepSubqueryIntervalFn := opts.NoStepSubqueryIntervalFn
+	if noStepSubqueryIntervalFn == nil {
+		noStepSubqueryIntervalFn = ng.noStepSubqueryIntervalFn
+	}
+
 	es := &parser.EvalStmt{
-		Expr:          PreprocessExpr(expr, start, end),
-		Start:         start,
-		End:           end,
-		Interval:      interval,
-		LookbackDelta: lookbackDelta,
+		Expr:                     PreprocessExpr(expr, start, end),
+		Start:                    start,
+		End:                      end,
+		Interval:                 interval,
+		LookbackDelta:            lookbackDelta,
+		NoStepSubqueryIntervalFn: noStepSubqueryIntervalFn,
 	}
 	qry := &query{
 		stmt:        es,
@@ -646,7 +654,7 @@ func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.Eval
 			logger:                   ng.logger,
 			lookbackDelta:            s.LookbackDelta,
 			samplesStats:             query.sampleStats,
-			noStepSubqueryIntervalFn: ng.noStepSubqueryIntervalFn,
+			noStepSubqueryIntervalFn: s.NoStepSubqueryIntervalFn,
 		}
 		query.sampleStats.InitStepTracking(start, start, 1)
 
@@ -698,7 +706,7 @@ func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.Eval
 		logger:                   ng.logger,
 		lookbackDelta:            s.LookbackDelta,
 		samplesStats:             query.sampleStats,
-		noStepSubqueryIntervalFn: ng.noStepSubqueryIntervalFn,
+		noStepSubqueryIntervalFn: s.NoStepSubqueryIntervalFn,
 	}
 	query.sampleStats.InitStepTracking(evaluator.startTimestamp, evaluator.endTimestamp, evaluator.interval)
 	val, warnings, err := evaluator.Eval(s.Expr)
@@ -823,6 +831,20 @@ func (ng *Engine) getTimeRangesForSelector(s *parser.EvalStmt, n *parser.VectorS
 	return start, end
 }
 
+func (ng *Engine) getLastSubqueryInterval(path []parser.Node, noStepSubqueryIntervalFn func(rangeMillis int64) int64) time.Duration {
+	var interval time.Duration
+	for _, node := range path {
+		switch n := node.(type) {
+		case *parser.SubqueryExpr:
+			interval = n.Step
+			if n.Step == 0 {
+				interval = time.Duration(noStepSubqueryIntervalFn(durationMilliseconds(n.Range))) * time.Millisecond
+			}
+		}
+	}
+	return interval
+}
+
 func (ng *Engine) populateSeries(querier storage.Querier, s *parser.EvalStmt) {
 	// Whenever a MatrixSelector is evaluated, evalRange is set to the corresponding range.
 	// The evaluation of the VectorSelector inside then evaluates the given range and unsets
@@ -833,6 +855,10 @@ func (ng *Engine) populateSeries(querier storage.Querier, s *parser.EvalStmt) {
 		switch n := node.(type) {
 		case *parser.VectorSelector:
 			start, end := ng.getTimeRangesForSelector(s, n, path, evalRange)
+			interval := ng.getLastSubqueryInterval(path, s.NoStepSubqueryIntervalFn)
+			if interval == 0 {
+				interval = s.Interval
+			}
 			hints := &storage.SelectHints{
 				Start: start,
 				End:   end,
