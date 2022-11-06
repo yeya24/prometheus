@@ -69,6 +69,8 @@ type EvalStmt struct {
 	Interval time.Duration
 	// Lookback delta to use for this evaluation.
 	LookbackDelta time.Duration
+	// NoStepSubqueryIntervalFn to use for this evaluation.
+	NoStepSubqueryIntervalFn func(rangeMillis int64) int64
 }
 
 func (*EvalStmt) PromQLStmt() {}
