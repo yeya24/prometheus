@@ -231,14 +231,14 @@ func TestQueryError(t *testing.T) {
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
 
-	vectorQuery, err := engine.NewInstantQuery(queryable, nil, "foo", time.Unix(1, 0))
+	vectorQuery, err := engine.NewInstantQuery(ctx, queryable, nil, "foo", time.Unix(1, 0))
 	require.NoError(t, err)
 
 	res := vectorQuery.Exec(ctx)
 	require.Error(t, res.Err, "expected error on failed select but got none")
 	require.True(t, errors.Is(res.Err, errStorage), "expected error doesn't match")
 
-	matrixQuery, err := engine.NewInstantQuery(queryable, nil, "foo[1m]", time.Unix(1, 0))
+	matrixQuery, err := engine.NewInstantQuery(ctx, queryable, nil, "foo[1m]", time.Unix(1, 0))
 	require.NoError(t, err)
 
 	res = matrixQuery.Exec(ctx)
@@ -565,9 +565,9 @@ func TestSelectHintsSetCorrectly(t *testing.T) {
 				err   error
 			)
 			if tc.end == 0 {
-				query, err = engine.NewInstantQuery(hintsRecorder, nil, tc.query, timestamp.Time(tc.start))
+				query, err = engine.NewInstantQuery(ctx, hintsRecorder, nil, tc.query, timestamp.Time(tc.start))
 			} else {
-				query, err = engine.NewRangeQuery(hintsRecorder, nil, tc.query, timestamp.Time(tc.start), timestamp.Time(tc.end), time.Second)
+				query, err = engine.NewRangeQuery(ctx, hintsRecorder, nil, tc.query, timestamp.Time(tc.start), timestamp.Time(tc.end), time.Second)
 			}
 			require.NoError(t, err)
 
