@@ -134,6 +134,8 @@ type QueryOpts struct {
 	EnablePerStepStats bool
 	// Lookback delta duration for this query.
 	LookbackDelta time.Duration
+	// UserID info
+	UserID string
 }
 
 // query implements the Query interface.
