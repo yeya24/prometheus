@@ -2168,29 +2168,31 @@ func TestPostingsForMatchers(t *testing.T) {
 			}
 			name += matcher.String()
 		}
-		t.Run(name, func(t *testing.T) {
-			exp := map[string]struct{}{}
-			for _, l := range c.exp {
-				exp[l.String()] = struct{}{}
-			}
-			p, err := PostingsForMatchers(ir, c.matchers...)
-			require.NoError(t, err)
-
-			var builder labels.ScratchBuilder
-			for p.Next() {
-				require.NoError(t, ir.Series(p.At(), &builder, &[]chunks.Meta{}))
-				lbls := builder.Labels()
-				if _, ok := exp[lbls.String()]; !ok {
-					t.Errorf("Evaluating %v, unexpected result %s", c.matchers, lbls.String())
-				} else {
-					delete(exp, lbls.String())
+		for _, optimizeMatchAll := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, optimize=%s", name, strconv.FormatBool(optimizeMatchAllRegex)), func(t *testing.T) {
+				exp := map[string]struct{}{}
+				for _, l := range c.exp {
+					exp[l.String()] = struct{}{}
 				}
-			}
-			require.NoError(t, p.Err())
-			if len(exp) != 0 {
-				t.Errorf("Evaluating %v, missing results %+v", c.matchers, exp)
-			}
-		})
+				p, err := PostingsForMatchers(ir, optimizeMatchAll, c.matchers...)
+				require.NoError(t, err)
+
+				var builder labels.ScratchBuilder
+				for p.Next() {
+					require.NoError(t, ir.Series(p.At(), &builder, &[]chunks.Meta{}))
+					lbls := builder.Labels()
+					if _, ok := exp[lbls.String()]; !ok {
+						t.Errorf("Evaluating %v, unexpected result %s", c.matchers, lbls.String())
+					} else {
+						delete(exp, lbls.String())
+					}
+				}
+				require.NoError(t, p.Err())
+				if len(exp) != 0 {
+					t.Errorf("Evaluating %v, missing results %+v", c.matchers, exp)
+				}
+			})
+		}
 	}
 }
 

@@ -551,7 +551,7 @@ func (pb *Block) Delete(mint, maxt int64, ms ...*labels.Matcher) error {
 		return ErrClosing
 	}
 
-	p, err := PostingsForMatchers(pb.indexr, ms...)
+	p, err := PostingsForMatchers(pb.indexr, optimizeMatchAllRegex, ms...)
 	if err != nil {
 		return errors.Wrap(err, "select series")
 	}

@@ -186,6 +186,9 @@ type Options struct {
 	// OutOfOrderCapMax is maximum capacity for OOO chunks (in samples).
 	// If it is <=0, the default value is assumed.
 	OutOfOrderCapMax int64
+
+	// If true, optimize matching all regex .* and .+ when matching postings.
+	OptimizeMatchAllRegex bool
 }
 
 type BlocksToDeleteFunc func(blocks []*Block) map[ulid.ULID]struct{}
@@ -834,6 +837,7 @@ func open(dir string, l log.Logger, r prometheus.Registerer, opts *Options, rngs
 			}
 		}
 	}
+	optimizeMatchAllRegex = opts.OptimizeMatchAllRegex
 	db.oooWasEnabled.Store(opts.OutOfOrderTimeWindow > 0)
 	headOpts := DefaultHeadOptions()
 	headOpts.ChunkRange = rngs[0]

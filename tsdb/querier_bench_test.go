@@ -61,8 +61,11 @@ func BenchmarkQuerier(b *testing.B) {
 	ir, err := h.Index()
 	require.NoError(b, err)
 	b.Run("Head", func(b *testing.B) {
-		b.Run("PostingsForMatchers", func(b *testing.B) {
-			benchmarkPostingsForMatchers(b, ir)
+		b.Run("PostingsForMatchers non optimized", func(b *testing.B) {
+			benchmarkPostingsForMatchers(b, ir, false)
+		})
+		b.Run("PostingsForMatchers optimized", func(b *testing.B) {
+			benchmarkPostingsForMatchers(b, ir, true)
 		})
 		b.Run("labelValuesWithMatchers", func(b *testing.B) {
 			benchmarkLabelValuesWithMatchers(b, ir)
@@ -81,8 +84,11 @@ func BenchmarkQuerier(b *testing.B) {
 	require.NoError(b, err)
 	defer ir.Close()
 	b.Run("Block", func(b *testing.B) {
-		b.Run("PostingsForMatchers", func(b *testing.B) {
-			benchmarkPostingsForMatchers(b, ir)
+		b.Run("PostingsForMatchers non optimized", func(b *testing.B) {
+			benchmarkPostingsForMatchers(b, ir, false)
+		})
+		b.Run("PostingsForMatchers optimized", func(b *testing.B) {
+			benchmarkPostingsForMatchers(b, ir, true)
 		})
 		b.Run("labelValuesWithMatchers", func(b *testing.B) {
 			benchmarkLabelValuesWithMatchers(b, ir)
@@ -90,7 +96,7 @@ func BenchmarkQuerier(b *testing.B) {
 	})
 }
 
-func benchmarkPostingsForMatchers(b *testing.B, ir IndexReader) {
+func benchmarkPostingsForMatchers(b *testing.B, ir IndexReader, optimize bool) {
 	n1 := labels.MustNewMatcher(labels.MatchEqual, "n", "1"+postingsBenchSuffix)
 	nX := labels.MustNewMatcher(labels.MatchEqual, "n", "X"+postingsBenchSuffix)
 
@@ -166,7 +172,7 @@ func benchmarkPostingsForMatchers(b *testing.B, ir IndexReader) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, err := PostingsForMatchers(ir, c.matchers...)
+				_, err := PostingsForMatchers(ir, optimize, c.matchers...)
 				require.NoError(b, err)
 			}
 		})

@@ -35,6 +35,8 @@ import (
 // Bitmap used by func isRegexMetaCharacter to check whether a character needs to be escaped.
 var regexMetaCharacterBytes [16]byte
 
+var optimizeMatchAllRegex bool
+
 // isRegexMetaCharacter reports whether byte b needs to be escaped.
 func isRegexMetaCharacter(b byte) bool {
 	return b < utf8.RuneSelf && regexMetaCharacterBytes[b%16]&(1<<(b/16)) != 0
@@ -129,7 +131,7 @@ func (q *blockQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ..
 	maxt := q.maxt
 	disableTrimming := false
 
-	p, err := PostingsForMatchers(q.index, ms...)
+	p, err := PostingsForMatchers(q.index, optimizeMatchAllRegex, ms...)
 	if err != nil {
 		return storage.ErrSeriesSet(err)
 	}
@@ -173,7 +175,7 @@ func (q *blockChunkQuerier) Select(sortSeries bool, hints *storage.SelectHints, 
 		maxt = hints.End
 		disableTrimming = hints.DisableTrimming
 	}
-	p, err := PostingsForMatchers(q.index, ms...)
+	p, err := PostingsForMatchers(q.index, optimizeMatchAllRegex, ms...)
 	if err != nil {
 		return storage.ErrChunkSeriesSet(err)
 	}
@@ -234,7 +236,7 @@ func findSetMatches(pattern string) []string {
 
 // PostingsForMatchers assembles a single postings iterator against the index reader
 // based on the given matchers. The resulting postings are not ordered by series.
-func PostingsForMatchers(ix IndexReader, ms ...*labels.Matcher) (index.Postings, error) {
+func PostingsForMatchers(ix IndexReader, optimizeMatchAll bool, ms ...*labels.Matcher) (index.Postings, error) {
 	var its, notIts []index.Postings
 	// See which label must be non-empty.
 	// Optimization for case like {l=~".", l!="1"}.
@@ -289,6 +291,13 @@ func PostingsForMatchers(ix IndexReader, ms ...*labels.Matcher) (index.Postings,
 				}
 				its = append(its, it)
 			default: // l="a"
+				if optimizeMatchAll && m.Type == labels.MatchRegexp && m.Value == ".+" {
+					vals, err := ix.LabelValues(m.Name)
+					if err != nil {
+						return nil, err
+					}
+					return ix.Postings(m.Name, vals...)
+				}
 				// Non-Not matcher, use normal postingsForMatcher.
 				it, err := postingsForMatcher(ix, m)
 				if err != nil {
@@ -300,15 +309,19 @@ func PostingsForMatchers(ix IndexReader, ms ...*labels.Matcher) (index.Postings,
 				its = append(its, it)
 			}
 		default: // l=""
-			// If the matchers for a labelname selects an empty value, it selects all
-			// the series which don't have the label name set too. See:
-			// https://github.com/prometheus/prometheus/issues/3575 and
-			// https://github.com/prometheus/prometheus/pull/3578#issuecomment-351653555
-			it, err := inversePostingsForMatcher(ix, m)
-			if err != nil {
-				return nil, err
+			if optimizeMatchAll && m.Type == labels.MatchRegexp && m.Value == ".*" {
+				notIts = append(notIts, index.EmptyPostings())
+			} else {
+				// If the matchers for a labelname selects an empty value, it selects all
+				// the series which don't have the label name set too. See:
+				// https://github.com/prometheus/prometheus/issues/3575 and
+				// https://github.com/prometheus/prometheus/pull/3578#issuecomment-351653555
+				it, err := inversePostingsForMatcher(ix, m)
+				if err != nil {
+					return nil, err
+				}
+				notIts = append(notIts, it)
 			}
-			notIts = append(notIts, it)
 		}
 	}
 
@@ -405,7 +418,7 @@ func inversePostingsForMatcher(ix IndexReader, m *labels.Matcher) (index.Posting
 }
 
 func labelValuesWithMatchers(r IndexReader, name string, matchers ...*labels.Matcher) ([]string, error) {
-	p, err := PostingsForMatchers(r, matchers...)
+	p, err := PostingsForMatchers(r, optimizeMatchAllRegex, matchers...)
 	if err != nil {
 		return nil, errors.Wrap(err, "fetching postings for matchers")
 	}
@@ -455,7 +468,7 @@ func labelValuesWithMatchers(r IndexReader, name string, matchers ...*labels.Mat
 }
 
 func labelNamesWithMatchers(r IndexReader, matchers ...*labels.Matcher) ([]string, error) {
-	p, err := PostingsForMatchers(r, matchers...)
+	p, err := PostingsForMatchers(r, optimizeMatchAllRegex, matchers...)
 	if err != nil {
 		return nil, err
 	}
