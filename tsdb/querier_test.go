@@ -2330,7 +2330,7 @@ func (m mockIndex) SortedPostings(p index.Postings) index.Postings {
 	return index.NewListPostings(ep)
 }
 
-func (m mockIndex) PostingsForLabelMatching(ctx context.Context, name string, match func(string) bool) index.Postings {
+func (m mockIndex) PostingsForLabelMatching(ctx context.Context, name string, match func(string) bool, prefix string) index.Postings {
 	var res []index.Postings
 	for l, srs := range m.postings {
 		if l.Name == name && match(l.Value) {
@@ -3259,7 +3259,7 @@ func (m mockMatcherIndex) LabelNames(context.Context, ...*labels.Matcher) ([]str
 	return []string{}, nil
 }
 
-func (m mockMatcherIndex) PostingsForLabelMatching(context.Context, string, func(string) bool) index.Postings {
+func (m mockMatcherIndex) PostingsForLabelMatching(context.Context, string, func(string) bool, string) index.Postings {
 	return index.ErrPostings(fmt.Errorf("PostingsForLabelMatching called"))
 }
 
@@ -3700,7 +3700,7 @@ func (m mockReaderOfLabels) LabelNamesFor(context.Context, index.Postings) ([]st
 	panic("LabelNamesFor called")
 }
 
-func (m mockReaderOfLabels) PostingsForLabelMatching(context.Context, string, func(string) bool) index.Postings {
+func (m mockReaderOfLabels) PostingsForLabelMatching(context.Context, string, func(string) bool, string) index.Postings {
 	panic("PostingsForLabelMatching called")
 }
 

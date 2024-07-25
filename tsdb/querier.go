@@ -329,7 +329,7 @@ func postingsForMatcher(ctx context.Context, ix IndexReader, m *labels.Matcher) 
 		}
 	}
 
-	it := ix.PostingsForLabelMatching(ctx, m.Name, m.Matches)
+	it := ix.PostingsForLabelMatching(ctx, m.Name, m.Matches, m.Prefix())
 	return it, it.Err()
 }
 

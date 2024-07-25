@@ -1769,7 +1769,7 @@ func (r *Reader) Postings(ctx context.Context, name string, values ...string) (P
 	return Merge(ctx, res...), nil
 }
 
-func (r *Reader) PostingsForLabelMatching(ctx context.Context, name string, match func(string) bool) Postings {
+func (r *Reader) PostingsForLabelMatching(ctx context.Context, name string, match func(value string) bool, _ string) Postings {
 	if r.version == FormatV1 {
 		return r.postingsForLabelMatchingV1(ctx, name, match)
 	}

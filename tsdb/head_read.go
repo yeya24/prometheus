@@ -121,8 +121,8 @@ func (h *headIndexReader) Postings(ctx context.Context, name string, values ...s
 	}
 }
 
-func (h *headIndexReader) PostingsForLabelMatching(ctx context.Context, name string, match func(string) bool) index.Postings {
-	return h.head.postings.PostingsForLabelMatching(ctx, name, match)
+func (h *headIndexReader) PostingsForLabelMatching(ctx context.Context, name string, match func(value string) bool, prefix string) index.Postings {
+	return h.head.postings.PostingsForLabelMatching(ctx, name, match, prefix)
 }
 
 func (h *headIndexReader) SortedPostings(p index.Postings) index.Postings {
